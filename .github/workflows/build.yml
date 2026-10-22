@@ -1,0 +1,76 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Same GCC release as the ST bundle (GNU Tools for STM32 14.3.1)
+  ARM_GCC_VERSION: 14.3.rel1
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Arm GNU Toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/arm-gnu-toolchain
+          key: arm-gnu-toolchain-${{ env.ARM_GCC_VERSION }}-x86_64
+
+      - name: Download Arm GNU Toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          url="https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_GCC_VERSION}/binrel/arm-gnu-toolchain-${ARM_GCC_VERSION}-x86_64-arm-none-eabi.tar.xz"
+          mkdir -p ~/arm-gnu-toolchain
+          curl -fsSL "$url" | tar -xJ -C ~/arm-gnu-toolchain --strip-components=1
+
+      - name: Install Ninja and add toolchain to PATH
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build
+          echo "$HOME/arm-gnu-toolchain/bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions
+        run: |
+          arm-none-eabi-gcc --version | head -n 1
+          cmake --version | head -n 1
+          ninja --version
+
+      - name: Configure
+        working-directory: firmware
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        working-directory: firmware
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Size
+        working-directory: firmware
+        run: |
+          arm-none-eabi-size build/${{ matrix.preset }}/firmware.elf
+          {
+            echo "### ${{ matrix.preset }} size"
+            echo '```'
+            arm-none-eabi-size build/${{ matrix.preset }}/firmware.elf
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.preset }}
+          path: |
+            firmware/build/${{ matrix.preset }}/firmware.elf
+            firmware/build/${{ matrix.preset }}/firmware.map
+          if-no-files-found: warn
